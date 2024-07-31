@@ -1,0 +1,1220 @@
+---
+title: Dynamics of woodland soil microbial communities during restoration after
+  industrial and agricultural land use
+author: "Bana"
+date: "2024-06-11"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/banaibrahim/Desktop/Thesis/data")
+```
+
+# Install Packages
+```{r, eval=FALSE} 
+# # CRAN
+# 
+# install.packages("vegan")
+# install.packages("Polychrome")
+# install.packages("dendextend") 
+# install.packages("ggplotify")
+# install.packages("parallelMap")
+# install.packages("caret")
+# install.packages("randomForest")
+# 
+# # Bioconductor
+# 
+# install.packages("BiocManager")
+# BiocManager::install("phyloseq")
+# BiocManager::install("ANCOMBC")
+# BiocManager::install("mixOmics")
+# 
+# # GitHub
+# 
+# install.packages("devtools")
+# devtools::install_github("jbisanz/qiime2R")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(dplyr)
+library(ggplot2)
+```
+
+# Load data to Phyloseq
+Data is ASVs 
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Required library
+library(qiime2R) 
+library(phyloseq) 
+library(vegan)
+
+# Source files:
+feature_table_qza <- "feature_table.qza"
+rooted_tree_qza <- "rooted_tree.qza"
+taxonomy_qza <- "taxonomy.qza"
+metadata_tsv <- "samples.txt"
+
+# Read data
+data.phy <- qza_to_phyloseq(
+    features = feature_table_qza,
+    tree = rooted_tree_qza,
+    taxonomy = taxonomy_qza,
+    metadata = metadata_tsv
+    )
+```
+
+```{r}
+# Cleanup
+# Removal of not needed objects, packages and cleaning the RAM
+rm(feature_table_qza, rooted_tree_qza, taxonomy_qza, metadata_tsv) # remove unnecessary objects
+detach("package:qiime2R", unload=TRUE) # unload qiime2R package
+gc() # free unused R memory
+```
+
+# Filtering and merging
+## Filter Industrial and Agriculture samples
+```{r}
+# Keep only samples with Industrial or Agricultural prior use
+table(sample_data(data.phy)$Former_landuse)
+```
+
+```{r}
+IndAgri <- subset_samples(data.phy, 
+                          Former_landuse %in% c("Industrial","Agriculture"))
+IndAgri 
+```
+
+## Filter bacterial Kingdom 
+```{r}
+table(as.data.frame(tax_table(data.phy))$Kingdom)
+```
+
+```{r}
+# Keep only Bacteria 
+BacIndAgri <- subset_taxa(IndAgri, Kingdom == "d__Bacteria")
+BacIndAgri # The OTU count dropped from 60,355 to 60,173
+
+```
+
+## Merging and Rarefaction 
+```{r}
+plot_rarefaction_curve <- function(phy.obj, taxa_level) {
+  # sample depth Curve before Rarefaction
+  # Extract the ASV table from the phyloseq object
+  otu_table <- otu_table(phy.obj)
+  # Transpose the table 
+  if (taxa_are_rows(otu_table)) {
+    otu_table <- t(otu_table)
+  }
+  # Convert to a matrix
+  otu_matrix <- as(otu_table, "matrix")
+
+  # Generate rarefaction curve to decide sample depth 
+  rare_curve <- rarecurve(otu_matrix, step = 100, cex = 0.5, col = "blue", label = FALSE,
+            xlab = "Sample Size", ylab = taxa_level)
+}
+```
+
+## 1. Family level merging
+```{r}
+# Agglomerate Bacteria to family level
+BacIndAgriFamily <- tax_glom(BacIndAgri, taxrank="Family")
+BacIndAgriFamily
+```
+
+### Normalization (Rarefaction)
+```{r}
+# Check the sample depth for deciding the rarefaction threshold
+plot_rarefaction_curve(BacIndAgriFamily, "ASVs (Family)")
+```
+
+## 2. Genera level merging
+```{r}
+# Agglomerate Bacteria to genus level
+BacIndAgriGenera <- tax_glom(BacIndAgri, taxrank="Genus")
+BacIndAgriGenera
+```
+
+### Normalization (Rarefaction)
+```{r}
+# Check the sample depth for deciding the rarefaction threshold
+plot_rarefaction_curve(BacIndAgriGenera, "ASVs (Genus)")
+```
+
+## 3. Species level merging
+
+### Normalization (Rarefaction)
+```{r}
+# Check the sample depth for deciding the rarefaction threshold
+plot_rarefaction_curve(BacIndAgri, "ASVs (Species)")
+```
+
+## Applying Rarefaction on Genera merged data
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Rarefy the phyloseq object to an even depth of 10000 sequences per sample
+BacIndAgriGenera.rarefied <- rarefy_even_depth(BacIndAgriGenera, 
+                                                 sample.size = 10000, 
+                                                 rngseed = 123, replace = FALSE)
+```
+
+* Rarefation done on Genera level, for multiple reasons: 1. not all ASVs are classified up to species 2. The 16srRNA sequencing achieves better genus-level resolution
+
+* The decision of sample depth threshold (10000) to use for normalization was mainly based on visual assessment of two things: sample reaching the plateau of ASVs count and avoiding losing any samples.
+
+
+## Filtering low quality ASVs (at Genera level)
+```{r}
+# (Function) to create and save a histogram
+save_histogram <- function(data, xlab, ylab, main, filename) {
+  # Display the histogram
+  hist(data, xlab = xlab, ylab = ylab, main = main)
+  
+  # Save the histogram to a file
+  dev.copy(png, filename)
+  dev.off()
+}
+```
+
+```{r}
+# Convert the OTU table to matrix
+BacIndAgriGenera.numeric <- as.numeric(otu_table(BacIndAgriGenera))
+BacIndAgriGenera.mtx <- matrix(BacIndAgriGenera.numeric, nrow=nrow(otu_table(BacIndAgriGenera)))
+
+# Getting the ASV that has more than 0 count in each sample THRESHOLD
+BacIndAgriGenera.count_filter <- BacIndAgriGenera.mtx > 0
+
+# Sum the number of ASV for each sample that has > count threshold 
+# The result will show the number of ASV (frequency, y-axis) > count threshold in each sample (x-axis)
+BacIndAgriGenera.count_filter.sum <- apply(BacIndAgriGenera.count_filter, 1, sum)
+
+# Display and save the first histogram
+save_histogram(BacIndAgriGenera.count_filter.sum, xlab = "Samples", ylab = "ASVs count (Genera)",
+               main = "Frequency of ASVs with count > 0 across samples", 
+               filename = "results/filter_low_quality_ASVs/ASVsGenera_count_histogram.png")
+
+# Plot histogram for sample interval (0-10)
+BacIndAgriGenera.count_filter.sum.1_10.interval <- BacIndAgriGenera.count_filter.sum[BacIndAgriGenera.count_filter.sum < 10]
+
+# Display and save the second histogram
+save_histogram(BacIndAgriGenera.count_filter.sum.1_10.interval, xlab = "Samples", ylab = "ASVs count (Genera)",
+               main = "Frequency of ASVs with count > 0 in 10 samples or less", 
+               filename = "results/filter_low_quality_ASVs/ASVsGenera_count_histogram_1_10_interval.png")
+
+```
+
+Interpretation: Let's say for the second plot we have ~ 150 ASVs that are present in two samples.
+
+```{r}
+all_taxa.num <- length(BacIndAgriGenera.count_filter.sum)
+taxa_less10samples <- length(BacIndAgriGenera.count_filter.sum.1_10.interval)
+lost_taxa_perc <- round((taxa_less10samples / all_taxa.num) * 100, 2)
+
+print(paste("Out of", all_taxa.num, "the number of lost ASVs (Genera) after filtering taxa with abundance > 0 counts in less than 10 samples", taxa_less10samples, "Which is", lost_taxa_perc, "%"))
+```
+
+From count filtering histogram and stats, half of ASVs (Genera) will be lost. Therefore, for further analysis the data will be kept without filtering unless it’s required for a statistical method to be used. 
+
+# Visualizing Microbial diversity 
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(ggplot2)
+library(plotly)
+library(RColorBrewer)
+```
+
+## Bar plot
+### Former land use
+```{r}
+# Aggregate data at Phylum level
+BacIndAgriPhylum.rarefied <- tax_glom(BacIndAgriGenera.rarefied, taxrank = "Phylum")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide',fig.keep='all'}
+env_factor_bar_plot <- function(phyloseq.obj, env_factor, save_path, levels=c()) { 
+  # Merge samples by environmental factor (categorical one)
+  phyloseq.obj.merged <- merge_samples(phyloseq.obj, env_factor)
+  
+  # Transform counts to relative abundances
+  phyloseq.obj.merged <- transform_sample_counts(phyloseq.obj.merged, function(x) x / sum(x))
+  
+  # Extract the data for plotting
+  phyloseq.obj.merged.df <- psmelt(phyloseq.obj.merged)
+  
+  
+  # Get counts per phylum
+  Phyla.df <- phyloseq.obj.merged.df %>% 
+    group_by(Phylum) %>% 
+    summarise(Count = sum(Abundance))
+  
+  # Select the cut-off for the Phylum taxa (e.g. 1% of total count)
+  cutoff <- 0.01 * sum(phyloseq.obj.merged.df$Abundance)
+  
+  # Select low-abundant Phyla (with total counts below the cutoff)
+  lowAbundant <- Phyla.df[Phyla.df$Count <= cutoff,]$Phylum
+  
+  # Substitute Phylum names to "<1%" for the low-abundant phyla
+  phyloseq.obj.merged.df[phyloseq.obj.merged.df$Phylum %in% lowAbundant,]$Phylum <- '<1%'
+  
+  # Ensure env_factor levels are ordered correctly in the melted data frame
+  if (length(levels) > 0){
+    phyloseq.obj.merged.df$Sample <- factor(phyloseq.obj.merged.df$Sample, levels = levels)
+  }
+  
+  # Define high contrast palette for bar plot
+  n_colors <- length(unique(phyloseq.obj.merged.df$Phylum))
+  high_contrast_palette <- c(brewer.pal(min(9, n_colors), "Set1"), brewer.pal(max(0, n_colors - 9), "Dark2"))
+  
+  # Create bar plot 
+  barplot <- ggplot(phyloseq.obj.merged.df, aes(x = Sample, y = Abundance, fill = Phylum, text = paste("Phylum:", Phylum, "<br>", env_factor, ":", Sample, "<br>Relative Abundance:", Abundance))) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = high_contrast_palette) +
+    theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+    labs(title = paste("Taxa Abundance by", env_factor), x = env_factor, y = "Relative Abundance")
+  
+  # Convert to plotly 
+  barplot.plotly <- ggplotly(barplot, tooltip = "text")
+  barplot.plotly
+  
+  # Save the plot as an HTML file
+  htmlwidgets::saveWidget(barplot.plotly, save_path)
+  return(barplot.plotly)
+} 
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+barplot.FLU <- env_factor_bar_plot(phyloseq.obj = BacIndAgriPhylum.rarefied, env_factor = "Former_landuse",
+                    save_path = "results/plotly/Taxonomy_Phyla_landuse_normalized.html")
+barplot.FLU
+```
+
+### pH
+```{r}
+pHValues <- as.numeric(sample_data(BacIndAgriGenera)$pH)
+pHValues.removed_nan <- na.omit(pHValues)
+print("")
+print("max pH")
+max(pHValues.removed_nan)
+print("Min pH")
+min(pHValues.removed_nan)
+print("Median pH")
+median(pHValues.removed_nan)
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Make sure pH column is numeric
+sample_data(BacIndAgriPhylum.rarefied)$pH <- as.numeric(as.character(sample_data(BacIndAgriPhylum.rarefied)$pH))
+
+# Categorizing pH 
+sample_data(BacIndAgriPhylum.rarefied)$pH_category <- factor(
+  cut(sample_data(BacIndAgriPhylum.rarefied)$pH,
+      breaks = c(3.78, 5, 6, 7.98),
+      labels = c("<5", "5-6", ">6")),
+  levels = c("<5", "5-6", ">6")
+)
+```
+
+```{r}
+pH_less_5 <- as.numeric(sample_data(BacIndAgriPhylum.rarefied)$pH_category == "<5")
+pH_less_5 <- na.omit(pH_less_5)
+print(paste("Number of samples with to pH < 5 =", sum(pH_less_5)))
+
+pH_5_6 <- as.numeric(sample_data(BacIndAgriPhylum.rarefied)$pH_category == "5-6")
+pH_5_6 <- na.omit(pH_5_6)
+print(paste("Number of samples with to pH 5-6 =", sum(pH_5_6)))
+
+pH_more_6 <- as.numeric(sample_data(BacIndAgriPhylum.rarefied)$pH_category == ">6")
+pH_more_6 <- na.omit(pH_more_6)
+print(paste("Number of samples with pH >6 =", sum(pH_more_6)))
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+barplot.pH <- env_factor_bar_plot(phyloseq.obj = BacIndAgriPhylum.rarefied, env_factor = "pH_category",
+                    save_path = "results/plotly/Taxonomy_Phyla_pH_normalized.html",
+                    levels = c("<5", "5-6", ">6"))
+barplot.pH
+```
+
+
+### Conductivity
+```{r}
+conductivityValues <- as.numeric(sample_data(BacIndAgriGenera)$Conductivity)
+# Calculate the quartiles
+quartiles <- quantile(conductivityValues, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+quartiles
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Make sure conductivity column is numeric
+sample_data(BacIndAgriPhylum.rarefied)$Conductivity <- as.numeric(as.character(sample_data(BacIndAgriPhylum.rarefied)$Conductivity))
+
+# Calculate the quartiles for conductivity
+quartiles <- quantile(sample_data(BacIndAgriPhylum.rarefied)$Conductivity, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+
+# Categories based on quartiles
+sample_data(BacIndAgriPhylum.rarefied)$Conductivity_category <-
+  cut(sample_data(BacIndAgriPhylum.rarefied)$Conductivity,
+      breaks = c(-Inf, quartiles, Inf),
+      labels = c("Q1: <0.25", "Q2: 0.25-0.5", "Q3: 0.5-0.75", "Q4: 0.75<"),
+      include.lowest = TRUE)
+
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+barplot.conductivity <- env_factor_bar_plot(phyloseq.obj = BacIndAgriPhylum.rarefied, env_factor = "Conductivity_category",
+                    save_path = "results/plotly/Taxonomy_Phyla_Conductivity_normalized.html")
+barplot.conductivity
+```
+
+## Line Plot
+### FLU vs pH
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+# Make sure pH column is numeric
+sample_data(BacIndAgri)$pH <- as.numeric(as.character(sample_data(BacIndAgri)$pH))
+
+# Make Former_landuse column as factor
+sample_data(BacIndAgri)$Former_landuse <- as.factor(sample_data(BacIndAgri)$Former_landuse)
+
+# Extract sample data into a df
+FLU_pH.df <- data.frame(sample_data(BacIndAgri))
+
+FLU_pH.plot <- plot_ly()
+
+# Compute density estimates for each Former_landuse level
+for(level in levels(FLU_pH.df$Former_landuse)) {
+  data_subset <- FLU_pH.df[FLU_pH.df$Former_landuse == level, ]
+  
+  dens <- density(data_subset$pH, na.rm = TRUE)  # Compute density
+  # Add density trace
+  FLU_pH.plot <- FLU_pH.plot %>% add_trace(
+    x = dens$x,
+    y = dens$y,
+    type = 'scatter',
+    mode = 'lines',
+    name = level,
+    opacity = 0.6
+  )
+}
+
+# Customize the layout
+FLU_pH.plot <- FLU_pH.plot %>% layout(
+  title = "Kernel Density Estimate of pH by Former Landuse",
+  xaxis = list(title = "pH"),
+  yaxis = list(title = "Density")
+)
+
+FLU_pH.plot
+
+# Save the plot as an HTML file
+htmlwidgets::saveWidget(FLU_pH.plot, "results/plotly/pH_vs_FLU.html")
+
+```
+
+## Correlation 
+Scatter Plot
+### pH vs Conductivity
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(broom)
+```
+
+```{r}
+# Make sure conductivity column is numeric
+sample_data(BacIndAgri)$Conductivity <- as.numeric(as.character(sample_data(BacIndAgri)$Conductivity))
+
+# Extract sample data 
+Cond_pH.df <- data.frame(sample_data(BacIndAgri))
+
+# linear regression 
+model <- lm(Conductivity ~ pH, data = Cond_pH.df)
+
+# Extract the coefficients
+summary_lm <- summary(model) # Benjamini-Hochberg adjusted p-value by default
+print(summary_lm)
+
+# Extract R-squared and slope
+r_squared <- summary_lm$r.squared
+slope <- summary_lm$coefficients[2, 1]
+
+# Create the regression plot
+Cond_pH.plot <- ggplot(Cond_pH.df, aes(x = pH, y = Conductivity, color = Former_landuse)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Regression of Conductivity on pH by Former Land Use",
+       subtitle = paste("R-squared =", round(r_squared, 2), 
+                          "Slope =", round(slope, 2)),
+       x = "pH",
+       y = "Conductivity") +
+  theme_minimal()
+
+print(Cond_pH.plot)
+
+# Convert to plotly 
+Cond_pH.plot_plotly <- ggplotly(Cond_pH.plot)
+print(Cond_pH.plot_plotly)
+
+# Save the plot as an HTML file
+htmlwidgets::saveWidget(Cond_pH.plot_plotly, "results/plotly/Regression_pH_Conductivity_by_LandUse.html")
+
+```
+
+Adjusted R-squared 0.2218 (very low) shows that the model failed to explain the real data points and the results are not reliable. For the results it tells that for one unit increase of pH the conductivity increases by 31.986, and theoretically at pH 0 the conductivity is -96.885 
+
+
+### Woodland age vs taxa abundance
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(dplyr)
+```
+
+```{r}
+# Function to compute the correlation between microbial abundance and environmental factor
+abundance_env_factor_corr <- function(phyloseq.obj, env_factor){
+  # Create abundance df
+  phyloseq.obj.abund <- psmelt(phyloseq.obj)
+  
+  # Ensure environmental factors are numerical
+  phyloseq.obj.abund$Woodland_age <- as.numeric(as.character(phyloseq.obj.abund$Woodland_age))
+  phyloseq.obj.abund$Conductivity <- as.numeric(as.character(phyloseq.obj.abund$Conductivity))
+  phyloseq.obj.abund$pH <- as.numeric(as.character(phyloseq.obj.abund$pH))
+  
+  # Aggregate abundance by Site_code (as samples of each site share the same value of pH, Conductivity, age) and Phylum, summing ASVs
+  phyloseq.obj.abund.summary <- phyloseq.obj.abund %>%
+    group_by(Site_code, Phylum) %>%
+    summarise(Abundance = sum(Abundance), .groups = 'drop')
+  
+  # Align Sample IDs between phyloseq sample data and the summary data
+  sample_data_df <- as.data.frame(sample_data(phyloseq.obj))
+  sample_data_df$Sample <- rownames(sample_data_df)
+  
+  # Join the summary data with the sample metadata
+  phyloseq.obj.abund.summary <- left_join(phyloseq.obj.abund.summary, sample_data_df, by = "Site_code")
+  
+  # Correlation function
+  compute_correlation <- function(df) {
+    cor_result <- cor.test(df[[env_factor]], df$Abundance, method = "spearman")
+    data.frame(
+      corr = cor_result$estimate,
+      p_value = cor_result$p.value
+    )
+  }
+  
+  # Compute correlation and p-value for each Phylum
+  correlations <- phyloseq.obj.abund.summary %>%
+    group_by(Phylum) %>%
+    summarise(correlation = list(compute_correlation(cur_data())), .groups = 'drop')
+  
+  # Flatten the list column to extract correlation and p-value
+  correlations <- correlations %>%
+    mutate(
+      correlation = sapply(correlations$correlation, function(x) x$corr),
+      p_value = sapply(correlations$correlation, function(x) x$p_value)
+    )
+  # Calculate the adjusted p-value
+  correlations$pAdjust <- p.adjust(correlations$p_value)
+  
+  # Filter taxa based on adjusted p-value <= 0.05
+  significant_taxa <- correlations %>%
+    filter(pAdjust <= 0.05)
+  
+  # Get top positively and negatively correlated taxa
+  top_positive <- significant_taxa %>%
+    arrange(desc(correlation)) %>%
+    slice_head(n = 4)
+  
+  top_negative <- significant_taxa %>%
+    arrange(correlation) %>%
+    slice_head(n = 4)
+  
+  print("Top positively correlated taxa with Woodland age:")
+  print(top_positive)
+  
+  print("Top negatively correlated taxa with Woodland age:")
+  print(top_negative)
+  
+  return(list("abund.summary"=phyloseq.obj.abund.summary, 
+          "top_positive"=top_positive, "top_negative"=top_negative))
+
+}
+```
+
+```{r}
+age_abund_corr <- abundance_env_factor_corr(phyloseq.obj = BacIndAgriPhylum.rarefied, 
+                                          env_factor = "Woodland_age")
+```
+
+```{r, fig.keep='all', fig.show='hold'}
+top_pos_neg_plot <- function(top_positive, top_negative, abund.summary, env_factor) {
+  # Select the top positively and negatively correlated taxa
+  top_taxa <- rbind(top_positive[1, ], top_negative[1, ])
+  
+  # Extract data for these taxa
+  top_taxa.abund.summary <- abund.summary %>%
+    filter(Phylum %in% top_taxa$Phylum)
+  
+  
+  # Scatter plots
+  for (phylum in unique(top_taxa$Phylum)) {
+    # Filter data for the current Phylum
+    phylum_data <- top_taxa.abund.summary %>% filter(Phylum == phylum)
+    
+    # Fit a linear model
+    lm_formula <- paste("Abundance", "~", env_factor)
+    lm_formula <- as.formula(lm_formula)
+    lm_model <- lm(lm_formula, data = phylum_data)
+    summary_lm <- summary(lm_model)
+    print("--------------------------------------")
+    print(summary_lm)
+    
+    # Extract R-squared and slope
+    r_squared <- summary_lm$r.squared
+    slope <- summary_lm$coefficients[2, 1]
+    
+    # Create scatter plot
+    p <- ggplot(phylum_data, aes_string(x = env_factor, y = "Abundance")) +
+      geom_point(color = "blue") +
+      geom_smooth(method = "lm", se = TRUE, color = "red") +
+      labs(title = paste("Abundance of", phylum, "vs", env_factor),
+           subtitle = paste("R-squared =", round(r_squared, 2), 
+                            "Slope =", round(slope, 2)),
+           x = env_factor,
+           y = "Abundance") +
+      theme_minimal()
+    
+    # Print the plot
+    print(p)
+  }
+}
+```
+
+```{r, fig.keep='all', fig.show='hold'}
+top_pos_neg_plot(top_positive = age_abund_corr$top_positive, top_negative = age_abund_corr$top_negative,
+                 abund.summary = age_abund_corr$abund.summary, env_factor = "Woodland_age")
+```
+
+### pH vs taxa abundance
+```{r}
+pH_abund_corr <- abundance_env_factor_corr(phyloseq.obj = BacIndAgriPhylum.rarefied, 
+                                          env_factor = "pH")
+```
+
+```{r, fig.keep='all', fig.show='hold'}
+top_pos_neg_plot(top_positive = pH_abund_corr$top_positive, top_negative = pH_abund_corr$top_negative,
+                 abund.summary = pH_abund_corr$abund.summary, env_factor = "pH")
+```
+
+### Conductivity vs taxa abundance
+```{r}
+conductivity_abund_corr <- abundance_env_factor_corr(phyloseq.obj = BacIndAgriPhylum.rarefied, 
+                                                     env_factor = "Conductivity")
+```
+
+```{r, fig.keep='all', fig.show='hold'}
+top_pos_neg_plot(top_positive = conductivity_abund_corr$top_positive, 
+                 top_negative = conductivity_abund_corr$top_negative,
+                 abund.summary = conductivity_abund_corr$abund.summary, env_factor = "Conductivity")
+```
+
+# Alpha Diversity
+```{r}
+alpha_diversity.plot <- function(alpha_richness, phyloseq_obj, env_factor){
+  # Apply Wilcoxon test 
+  chao1_res <- wilcox.test(alpha_richness$Chao1~
+                             sample_data(phyloseq_obj)[[env_factor]])
+  chao1.p_value <- chao1_res$p.value
+  shannon_res <- wilcox.test(alpha_richness$Shannon~
+                               sample_data(phyloseq_obj)[[env_factor]])
+  shannon.p_value <- shannon_res$p.value
+  simpson_res <- wilcox.test(alpha_richness$Simpson~
+                               sample_data(phyloseq_obj)[[env_factor]])
+  simpson.p_value <- simpson_res$p.value
+  
+  plot_richness(phyloseq_obj, 
+                measures=c("Chao1", "Shannon", "Simpson"),
+                color=env_factor, x=env_factor) + 
+    geom_boxplot() + ggtitle(paste("Alpha diversity vs", env_factor), 
+                             subtitle=paste("Chao1 p-value:", chao1.p_value,
+                                            "\nShannon p-value:", shannon.p_value,
+                                            "\nSimpson p-value:", simpson.p_value))
+}
+```
+
+## by FLU
+```{r}
+# Calculate Alpha diversity indices
+alpha_richness = estimate_richness(
+  BacIndAgriGenera.rarefied, measures = c("Chao1", "Shannon", "Simpson"))
+```
+
+```{r}
+alpha_diversity.plot(alpha_richness = alpha_richness, phyloseq_obj = BacIndAgriGenera.rarefied,
+                     env_factor = "Former_landuse")
+```
+## by Region
+```{r}
+alpha_diversity.plot(alpha_richness = alpha_richness, phyloseq_obj = BacIndAgriGenera.rarefied,
+                     env_factor = "Region")
+```
+
+# Differential Abundance
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(ANCOMBC)
+```
+
+Differential Abundance Tests:
+pH, conductivity, Region, age, FLU
+
+pH + conductivity + age --> Trend test
+Region --> Global test / pairwise
+FLU --> pairwise
+
+## FLU
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Estimate differential abundances
+# 1. FLU (Pairwise) bonferroni correction is often applied to control for the increased risk of Type I errors
+ancom.FLU = ancombc2(data = BacIndAgriGenera.rarefied, tax_level = "Genus",
+                     fix_formula = "Former_landuse", 
+                     group = "Former_landuse", 
+                     p_adj_method = "bonferroni", alpha = 0.05, pairwise = TRUE,
+                     prv_cut = 0.10, lib_cut = 0, 
+                     n_cl = 4, verbose = TRUE)
+# alpha: significance cut-off
+# prv_cut: filter taxa not present in prv_cut * samples_number
+# lib_cut: filter samples with library size threshold
+```
+
+```{r}
+# Extract the results table
+ancom.FLU.df <- ancom.FLU$res
+colnames(ancom.FLU.df)
+```
+
+```{r}
+# Select only columns that we need 
+ancom.FLU.df <- ancom.FLU.df %>% 
+  select(taxon, contains("Former_landuse"))
+```
+
+```{r}
+# Select differentially abundant taxa
+dif.FLU.df <- ancom.FLU.df %>% 
+  filter(diff_Former_landuseIndustrial & passed_ss_Former_landuseIndustrial) %>% 
+  arrange(desc(lfc_Former_landuseIndustrial))
+```
+
+```{r}
+# Filter out values that are not 2 fold change in both positive and negative direction
+dif.FLU.df <- dif.FLU.df %>%
+  filter(lfc_Former_landuseIndustrial >= 1 | lfc_Former_landuseIndustrial <= -1)
+
+# Create the 'direct' column to categorize LFC
+dif.FLU.df <- dif.FLU.df %>%
+  mutate(
+    direct = ifelse(lfc_Former_landuseIndustrial >= 1, "Positive LFC", "Negative LFC")
+  )
+
+# Ensure direct factorized 
+dif.FLU.df$direct = 
+  factor(dif.FLU.df$direct, levels = c("Positive LFC", "Negative LFC"))
+dif.FLU.df$taxon = 
+  factor(dif.FLU.df$taxon, levels = dif.FLU.df$taxon)
+
+```
+
+```{r}
+dif.FLU.df
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+# Make bar plot
+dif.FLU.plot <- dif.FLU.df %>%
+    ggplot(aes(x = taxon, y = lfc_Former_landuseIndustrial, fill = direct)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_Former_landuseIndustrial - se_Former_landuseIndustrial, 
+                      ymax = lfc_Former_landuseIndustrial + se_Former_landuseIndustrial), 
+                  width = 0.2, position = position_dodge(0.05), 
+                  color = "black") + 
+    labs(x = "Genus", y = "Log fold change") +  
+    ggtitle(label = "Differentially abundant taxa", 
+            subtitle="Prior land use: Industrial vs Agricultural") +
+    scale_fill_discrete(name = NULL) +
+    scale_color_discrete(name = NULL) +
+    theme_bw() + 
+    theme(panel.grid.minor.y = element_blank(),
+          axis.text.x = element_text(size = 6, angle = 60, hjust = 1))
+
+# Convert to plotly 
+dif.FLU.plot_plotly <- ggplotly(dif.FLU.plot, tooltip = "text")
+dif.FLU.plot_plotly
+
+# Save the plot as an HTML file
+htmlwidgets::saveWidget(dif.FLU.plot_plotly, "results/plotly/differential_abundant_taxa_FLU.html")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide', fig.keep='all', fig.show='hold'}
+# box plot function
+diff_abund.box_plot <- function(taxon, env_factor, title) {
+  taxon_data <- psmelt(BacIndAgriGenera.rarefied) %>%
+    filter(Genus == taxon)
+  
+  plot <- ggplot(taxon_data, aes_string(x = env_factor, y = "Abundance", fill = env_factor)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.2, alpha = 0.5) +
+    labs(title = title, x = env_factor, y = "Abundance") +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  return(plot)
+}
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide', fig.keep='all', fig.show='hold'}
+# Extract the first positive and negative taxa
+first_positive_taxa.FLU <- dif.FLU.df %>%
+  filter(direct == "Positive LFC") %>%
+  slice(1) %>%
+  pull(taxon)
+
+first_negative_taxa.FLU <- dif.FLU.df %>%
+  filter(direct == "Negative LFC") %>%
+  slice(1) %>%
+  pull(taxon)
+
+
+# Generate and plot the box plots
+positive_plot.FLU <- diff_abund.box_plot(first_positive_taxa.FLU, "Former_landuse",
+                                   paste("Abundance of", first_positive_taxa.FLU, "by Former Land Use"))
+negative_plot.FLU <- diff_abund.box_plot(first_negative_taxa.FLU, "Former_landuse",
+                                   paste("Abundance of", first_negative_taxa.FLU, "by Former Land Use"))
+
+
+print(positive_plot.FLU)
+print(negative_plot.FLU)
+
+
+```
+
+## Region
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# 2. Region
+ancom.region = ancombc2(data = BacIndAgriGenera.rarefied, tax_level = "Genus",
+                     fix_formula = "Region", 
+                     group = "Region", 
+                     p_adj_method = "bonferroni", alpha = 0.05, pairwise = TRUE,
+                     prv_cut = 0.10, lib_cut = 0, 
+                     n_cl = 4, verbose = TRUE)
+```
+
+```{r}
+# Extract the results table
+ancom.region.df <- ancom.region$res
+```
+
+```{r}
+# Select only columns that we need 
+ancom.region.df <- ancom.region.df %>% 
+  select(taxon, contains("Region"))
+```
+
+```{r}
+# Select differentially abundant taxa
+dif.region.df <- ancom.region.df %>% 
+  filter(diff_RegionScotland & passed_ss_RegionScotland) %>% 
+  arrange(desc(lfc_RegionScotland))
+```
+
+```{r}
+sum(dif.region.df$lfc_RegionScotland > 1)
+```
+
+```{r}
+# Filter out values that are not 2 fold change in both positive and negative direction
+dif.region.df <- dif.region.df %>%
+  filter(lfc_RegionScotland >= 1 | lfc_RegionScotland <= -1)
+
+# Create the 'direct' column to categorize LFC
+dif.region.df <- dif.region.df %>%
+  mutate(
+    direct = ifelse(lfc_RegionScotland >= 1, "Positive LFC", "Negative LFC")
+  )
+# Ensure direct factorized 
+dif.region.df$direct = 
+  factor(dif.region.df$direct, levels = c("Positive LFC", "Negative LFC"))
+dif.region.df$taxon = 
+  factor(dif.region.df$taxon, levels = dif.region.df$taxon)
+
+```
+
+```{r}
+dif.region.df
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+# Make bar plot
+dif.region.plot <- dif.region.df %>%
+    ggplot(aes(x = taxon, y = lfc_RegionScotland, fill = direct)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_RegionScotland - se_RegionScotland, 
+                      ymax = lfc_RegionScotland + se_RegionScotland), 
+                  width = 0.2, position = position_dodge(0.05), 
+                  color = "black") + 
+    labs(x = "Genus", y = "Log fold change") +  
+    ggtitle(label = "Differentially abundant taxa", 
+            subtitle="Region: Scotland vs England") +
+    scale_fill_discrete(name = NULL) +
+    scale_color_discrete(name = NULL) +
+    theme_bw() + 
+    theme(panel.grid.minor.y = element_blank(),
+          axis.text.x = element_text(size = 6, angle = 60, hjust = 1))
+
+# Convert to plotly 
+dif.region.plot_plotly <- ggplotly(dif.region.plot, tooltip = "text")
+dif.region.plot_plotly
+
+# Save the plot as an HTML file
+htmlwidgets::saveWidget(dif.region.plot_plotly, "results/plotly/differential_abundant_taxa_Region.html")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide', fig.keep='all', fig.show='hold'}
+# Extract the first positive and negative taxa
+first_positive_taxa.region <- dif.region.df %>%
+  filter(direct == "Positive LFC") %>%
+  slice(1) %>%
+  pull(taxon)
+
+first_negative_taxa.region <- dif.region.df %>%
+  filter(direct == "Negative LFC") %>%
+  slice(1) %>%
+  pull(taxon)
+
+
+# Generate and plot the box plots
+positive_plot.region <- diff_abund.box_plot(first_positive_taxa.region, "Region",
+                                   paste("Abundance of", first_positive_taxa.region, "by Region"))
+negative_plot.region <- diff_abund.box_plot(first_negative_taxa.region, "Region",
+                                   paste("Abundance of", first_negative_taxa.region, "by Region"))
+
+
+print(positive_plot.region)
+print(negative_plot.region)
+```
+
+# Ordination
+## NMDS
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Compute unweighted UniFrac distance
+unifrac_dist <- UniFrac(BacIndAgriGenera.rarefied, weighted = FALSE)
+
+# Perform NMDS ordination
+ordination.NMDS <- ordinate(BacIndAgriGenera.rarefied, method = "NMDS", distance = unifrac_dist)
+
+## For 3d plotting
+# NMDS ordination
+ordination.NMDS.3d <- metaMDS(unifrac_dist, k=3)
+
+# Extract NMDS samples scores (the position of each sample in the ordination space)
+nmds_scores <- scores(ordination.NMDS.3d, display="sites")
+
+# Convert to data frame and add sample metadata
+nmds_data <- as.data.frame(nmds_scores)
+```
+
+###Region
+```{r}
+# 2d plot
+ordination_NMDS.Region <- plot_ordination(BacIndAgriGenera.rarefied, ordination.NMDS, type="samples", color="Region") + 
+  ggtitle("samples ordination:", 
+          subtitle="NMDS with unweighted UniFrac distances")+ 
+  geom_point(size=3) + stat_ellipse() +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  guides(color=guide_legend(ncol=3))
+
+print(ordination_NMDS.Region)
+```
+
+```{r}
+nmds_data$Region <- sample_data(BacIndAgriGenera.rarefied)$Region
+
+# 3D plot
+ordination_NMDS.Region.3d <- plot_ly(nmds_data, x = ~NMDS1, y = ~NMDS2, z = ~NMDS3, 
+               color = ~Region, colors = c("red", "blue"), 
+               type = 'scatter3d', mode = 'markers',
+               marker = list(size = 5))
+
+ordination_NMDS.Region.3d <- ordination_NMDS.Region.3d %>% layout(title = "NMDS with Unweighted UniFrac Distances",
+                      scene = list(xaxis = list(title = 'NMDS1'),
+                                   yaxis = list(title = 'NMDS2'),
+                                   zaxis = list(title = 'NMDS3')))
+
+ordination_NMDS.Region.3d
+
+```
+
+###FLU
+```{r}
+ordination_NMDS.FLU <- plot_ordination(BacIndAgriGenera.rarefied, ordination.NMDS, type="samples", color="Former_landuse") + 
+  ggtitle("samples ordination:", 
+          subtitle="NMDS with unweighted UniFrac distances")+ 
+  geom_point(size=3) + stat_ellipse() +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  guides(color=guide_legend(ncol=3))
+
+print(ordination_NMDS.FLU)
+```
+
+```{r}
+nmds_data$Former_landuse <- sample_data(BacIndAgriGenera.rarefied)$Former_landuse
+
+# 3D plot
+ordination_NMDS.FLU.3d <- plot_ly(nmds_data, x = ~NMDS1, y = ~NMDS2, z = ~NMDS3, 
+               color = ~Former_landuse, colors = c("red", "blue"), 
+               type = 'scatter3d', mode = 'markers',
+               marker = list(size = 5))
+
+ordination_NMDS.FLU.3d <- ordination_NMDS.FLU.3d %>% layout(title = "NMDS with Unweighted UniFrac Distances",
+                      scene = list(xaxis = list(title = 'NMDS1'),
+                                   yaxis = list(title = 'NMDS2'),
+                                   zaxis = list(title = 'NMDS3')))
+
+ordination_NMDS.FLU.3d
+
+```
+
+## RDA
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Convert BacIndAgriGenera.rarefied to data frame for abundance and environmental data
+abund_data <- as.data.frame(t(otu_table(BacIndAgriGenera.rarefied)))
+env_data <- data.frame(as(sample_data(BacIndAgriGenera.rarefied), "data.frame"))
+# Select variables 
+env_data <- env_data[, c("Region", "Former_landuse", "Woodland_age", "pH", "Conductivity")]
+
+# Make sure pH, age, and conductivity are numerical
+env_data$Woodland_age <- as.numeric(as.character(env_data$Woodland_age))
+env_data$Conductivity <- as.numeric(as.character(env_data$Conductivity))
+env_data$pH <- as.numeric(as.character(env_data$pH))
+
+# Remove NA values
+env_data <- na.omit(env_data)
+# Factorize categorical columns
+env_data$Region <- as.factor(env_data$Region)
+env_data$Former_landuse <- as.factor(env_data$Former_landuse)
+
+
+# Select row names in abund_data that match env_data row names
+abund_data <- abund_data[rownames(abund_data) %in% rownames(env_data), ]
+
+# Perform RDA, constraining all env_data variables
+ordination.RDA <- rda(abund_data ~ pH + Conductivity, data = env_data)
+
+```
+
+```{r}
+RDA.R2adj <- RsquareAdj(ordination.RDA)$adj.r.squared
+RDA.R2adj
+```
+
+```{r}
+# # Enable the r-universe repo
+# options(repos = c(
+#     fawda123 = 'https://fawda123.r-universe.dev',
+#     CRAN = 'https://cloud.r-project.org'))
+# 
+# # Install ggord
+# install.packages('ggord')
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide', fig.keep='all'}
+library(ggord)
+```
+
+```{r}
+ggord(ordination.RDA, env_data$Region, ext=0.8, txt=4, grp_title="Region", xlims=c(-1,1), ylims=c(-1,1), alpha_el=0.6, size=1.5, poly=FALSE,
+      vectyp="longdash", obslab=FALSE, ptslab=FALSE)  
+```
+
+
+```{r}
+ggord(ordination.RDA, env_data$Former_landuse, ext=0.8, txt=4, grp_title="Former_landuse", xlims=c(-1,1), ylims=c(-1,1), poly=FALSE, size=1.5,
+      vectyp="longdash", obslab=FALSE, ptslab=FALSE)  
+```
+
+## cCA
+```{r}
+# Perform CCA
+ordination.cCA <- cca(abund_data ~ pH + Conductivity, data = env_data)
+```
+
+```{r}
+cCA.R2adj <- RsquareAdj(ordination.cCA)$adj.r.squared
+cCA.R2adj
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide', fig.keep='all'}
+ggord(ordination.cCA, env_data$Region, ext=0.8, txt=4, grp_title="Region", xlims=c(-1,1), ylims=c(-1,1), alpha_el=0.6, size=1.5,
+      vectyp="longdash", obslab=FALSE)  
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide', fig.keep='all'}
+ggord(ordination.cCA, env_data$Former_landuse, ext=0.8, txt=4, grp_title="Former_landuse", xlims=c(-1,1), ylims=c(-1,1), alpha_el=0.6, size=1.5,
+      vectyp="longdash", obslab=FALSE)  
+```
+
+# Nested Modelling
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Re transpose abund_data
+otu_table_matrix <- as.matrix(t(abund_data))
+
+# Create a new phyloseq object with the filtered samples (based on env_data, no NaNs)
+BacIndAgriGenera.rarefied_filtered <- phyloseq(
+  otu_table(otu_table_matrix, taxa_are_rows = TRUE),
+  sample_data(env_data),
+  tax_table(BacIndAgriGenera.rarefied),
+  phy_tree(BacIndAgriGenera.rarefied)
+)
+```
+
+```{r}
+# Calculate beta diversity metrics
+weighted_unifrac_dist.filtered <- UniFrac(BacIndAgriGenera.rarefied_filtered, weighted = TRUE)
+unweighted_unifrac_dist.filtered <- UniFrac(BacIndAgriGenera.rarefied_filtered, weighted = FALSE)
+bray_dist.filtered <- distance(BacIndAgriGenera.rarefied_filtered, method="bray")
+```
+
+```{r}
+adjus_p_value <- function(adonis_result){
+  # Extract p-values 
+  p_values <- adonis_result$`Pr(>F)`
+
+  # Adjust the p-values
+  p_adjusted <- p.adjust(p_values)  
+
+  # Add the adjusted p-values to adonis2 table
+  adonis_result$`Pr(>F)_adjusted` <- c(p_adjusted)
+  return(adonis_result)
+}
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(scales)  
+
+nested_model.pie <- function(nested_model, title){
+  # Extract the explained variance (R2) 
+  explained_variance <- nested_model$R2
+  
+  # Remove the NA values associated with the rest of table info
+  p_values <- nested_model$`Pr(>F)`
+  explained_variance <- explained_variance[!is.na(p_values)]
+  
+  # Names of the factors
+  factors <- rownames(nested_model)[1:length(explained_variance)]
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(
+    Factor = factors,
+    ExplainedVariance = explained_variance
+  )
+
+  # Ensure the levels of Factor are in the same order as the explained variance
+  plot_data$Factor <- factor(plot_data$Factor, levels = plot_data$Factor)
+  
+  # Custom legends
+  plot_data$LegendLabel <- paste0(plot_data$Factor, 
+                                  " (", percent(plot_data$ExplainedVariance), ")")
+
+  # Create the pie chart
+  pie_chart <- ggplot(plot_data, aes(x = "", y = ExplainedVariance, fill = Factor)) +
+    geom_bar(width = 1, stat = "identity") +
+    coord_polar(theta = "y") +
+    scale_y_continuous(labels = percent_format()) +
+    theme_void() +
+    theme(legend.position = "right") +
+    labs(title = title, fill = "Factor") +
+    scale_fill_manual(values = scales::brewer_pal(palette = "Set3")(length(plot_data$Factor)),
+                      labels = plot_data$LegendLabel) 
+
+  print(pie_chart)
+
+}
+```
+
+pH / conductivity / FLU / woodland age / region
+
+## Weighted UniFrac
+```{r}
+nested_model.weighted_unifrac <- adonis2(weighted_unifrac_dist.filtered ~ 
+  pH + Region + Former_landuse + Woodland_age + 
+  Region/Former_landuse + 
+  Former_landuse/pH + Former_landuse/Conductivity + 
+  Former_landuse/Woodland_age + 
+  Region/Woodland_age,
+        data = env_data, permutations=1000)
+nested_model.weighted_unifrac
+```
+
+```{r}
+adjus_p_value(nested_model.weighted_unifrac)
+```
+
+```{r}
+nested_model.pie(nested_model.weighted_unifrac, "Explained Variance of weighted UniFrac data by environmental factors")
+```
+
+## Unweighted UniFrac
+```{r}
+nested_model.unweighted_unifrac <- adonis2(unweighted_unifrac_dist.filtered ~ 
+  pH + Region + Former_landuse + Woodland_age + 
+  Region/Former_landuse + 
+  Former_landuse/pH + Former_landuse/Conductivity + 
+  Former_landuse/Woodland_age + 
+  Region/Woodland_age,
+        data = env_data, permutations=1000)
+nested_model.unweighted_unifrac
+```
+
+```{r}
+adjus_p_value(nested_model.unweighted_unifrac)
+```
+
+```{r}
+nested_model.pie(nested_model.unweighted_unifrac, "Explained Variance of unweighted UniFrac data by environmental factors")
+```
+
+## Bray curtis
+```{r}
+nested_model.bray <- adonis2(bray_dist.filtered ~ pH + Region*Former_landuse + Former_landuse/pH + Former_landuse/Conductivity + Former_landuse/Woodland_age + Region/Woodland_age,
+        data = env_data, permutations=1000)
+nested_model.bray
+```
+
+```{r}
+adjus_p_value(nested_model.bray)
+```
+
+```{r}
+nested_model.pie(nested_model.bray, "Explained Variance of bray curtis by environmental factors")
+```
+
+## Abundance data 
+```{r}
+nested_model.abund <- adonis2(abund_data ~ pH + Region*Former_landuse + Former_landuse/pH + Former_landuse/Conductivity + Former_landuse/Woodland_age + Region/Woodland_age,
+        data = env_data, permutations=1000)
+nested_model.abund
+```
+
+```{r}
+adjus_p_value(nested_model.abund)
+```
+
+```{r}
+nested_model.pie(nested_model.abund, "Explained Variance of abundance data by environmental factors")
+```
+
+
