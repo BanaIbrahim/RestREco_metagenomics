@@ -15,7 +15,7 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_knit$set(root.dir = "/Users/banaibrahim/Desktop/Thesis/data")
+knitr::opts_knit$set(root.dir = "data")
 ```
 
 # Install Packages
@@ -234,6 +234,15 @@ library(RColorBrewer)
 ```{r}
 # Aggregate data at Phylum level
 BacIndAgriPhylum.rarefied <- tax_glom(BacIndAgriGenera.rarefied, taxrank = "Phylum")
+```
+
+## Check data types
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Make sure pH / Conductivity / Age are numerical 
+sample_data(BacIndAgriPhylum.rarefied)$pH <- as.numeric(as.character(sample_data(BacIndAgriPhylum.rarefied)$pH))
+sample_data(BacIndAgriPhylum.rarefied)$Conductivity <- as.numeric(as.character(sample_data(BacIndAgriPhylum.rarefied)$Conductivity))
+sample_data(BacIndAgriPhylum.rarefied)$Woodland_age <- as.numeric(as.character(sample_data(BacIndAgriPhylum.rarefied)$Woodland_age))
+
 ```
 
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide',fig.keep='all'}
@@ -485,7 +494,7 @@ abundance_env_factor_corr <- function(phyloseq.obj, env_factor){
   # Aggregate abundance by Site_code (as samples of each site share the same value of pH, Conductivity, age) and Phylum, summing ASVs
   phyloseq.obj.abund.summary <- phyloseq.obj.abund %>%
     group_by(Site_code, Phylum) %>%
-    summarise(Abundance = sum(Abundance), .groups = 'drop')
+    summarise(Abundance = mean(Abundance), .groups = 'drop')
   
   # Align Sample IDs between phyloseq sample data and the summary data
   sample_data_df <- as.data.frame(sample_data(phyloseq.obj))
@@ -620,6 +629,7 @@ top_pos_neg_plot(top_positive = conductivity_abund_corr$top_positive,
 ```
 
 # Alpha Diversity
+## plot
 ```{r}
 alpha_diversity.plot <- function(alpha_richness, phyloseq_obj, env_factor){
   # Apply Wilcoxon test 
@@ -643,24 +653,188 @@ alpha_diversity.plot <- function(alpha_richness, phyloseq_obj, env_factor){
 }
 ```
 
-## by FLU
+### by FLU
 ```{r}
 # Calculate Alpha diversity indices
 alpha_richness = estimate_richness(
   BacIndAgriGenera.rarefied, measures = c("Chao1", "Shannon", "Simpson"))
 ```
 
-```{r}
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
 alpha_diversity.plot(alpha_richness = alpha_richness, phyloseq_obj = BacIndAgriGenera.rarefied,
                      env_factor = "Former_landuse")
 ```
-## by Region
-```{r}
+### by Region
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
 alpha_diversity.plot(alpha_richness = alpha_richness, phyloseq_obj = BacIndAgriGenera.rarefied,
                      env_factor = "Region")
 ```
 
+## Variance 
+### Shannon
+```{r}
+shannon_values <- alpha_richness$Shannon
+site_codes <- sample_data(BacIndAgriGenera.rarefied)$Site_code
+FLU_values <- sample_data(BacIndAgriGenera.rarefied)$Former_landuse
+shannon_site.df <- data.frame(Site_code = site_codes, Shannon = shannon_values, 
+                              Former_landuse = FLU_values)
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+ggplot(shannon_site.df, aes(x = Site_code, y = Shannon, fill = Former_landuse)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Shannon Diversity by Site",
+       x = "Site",
+       y = "Shannon Index") +
+  theme(axis.text.x = element_text(angle = 90, size=4)) 
+
+```
+```{r}
+# Calculate variance for sites replicas
+variance_data.shannon <- shannon_site.df %>%
+  group_by(Site_code) %>%
+  summarise(CV = (sd(Shannon, na.rm = TRUE)/mean(Shannon, na.rm = TRUE))*100, Former_landuse = unique(Former_landuse))
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+ggplot(variance_data.shannon, aes(x = Site_code, y = CV, fill = Former_landuse)) +
+  geom_bar(stat = "identity") + 
+  theme_minimal() +
+  labs(title = "Coefficient of Variation of Shannon Diversity by Site",
+       x = "Site",
+       y = "Coefficient of Variation") +
+  theme(axis.text.x = element_text(angle = 90, size=4)) 
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(readxl)
+```
+
+```{r}
+sites_pH_EC <- read_excel("pH_EC_RestREco_8th_July_2024.xlsx")
+```
+
+### pH
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+ggplot(sites_pH_EC, aes(x = Site_code, y = pH, fill = Former_landuse)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "pH Diversity by Site",
+       x = "Site",
+       y = "pH") +
+  theme(axis.text.x = element_text(angle = 90, size = 6)) 
+```
+
+```{r}
+# Calculate variance for sites replicas
+variance_data.pH <- sites_pH_EC %>%
+  group_by(Site_code) %>%
+  summarise(CV = (sd(pH, na.rm = TRUE)/mean(pH, na.rm = TRUE))*100, Former_landuse = unique(Former_landuse))
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+ggplot(variance_data.pH, aes(x = Site_code, y = CV, fill = Former_landuse)) +
+  geom_bar(stat = "identity") + 
+  theme_minimal() +
+  labs(title = "Coefficient of Variation of pH by Site",
+       x = "Site",
+       y = "Coefficient of Variation") +
+  theme(axis.text.x = element_text(angle = 90, size = 6)) 
+```
+
+### Conductivity
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+ggplot(sites_pH_EC, aes(x = Site_code, y = Conductivity, fill = Former_landuse)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Conductivity Diversity by Site",
+       x = "Site",
+       y = "Conductivity") +
+  theme(axis.text.x = element_text(angle = 90, size = 6)) 
+```
+
+```{r}
+# Calculate variance for sites replicas
+variance_data.conductivity <- sites_pH_EC %>%
+  group_by(Site_code) %>%
+  summarise(CV = (sd(Conductivity, na.rm = TRUE)/mean(Conductivity, na.rm = TRUE))*100,
+            Former_landuse = unique(Former_landuse))
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+ggplot(variance_data.conductivity, aes(x = Site_code, y = CV, fill = Former_landuse)) +
+  geom_bar(stat = "identity") +  
+  theme_minimal() +
+  labs(title = "Coefficient of Variation of Conductivity by Site",
+       x = "Site",
+       y = "Coefficient of Variation") +
+  theme(axis.text.x = element_text(angle = 90, size = 6)) 
+```
+
+## Modelling (nested design)
+```{r, eval=FALSE}
+#install.packages("remotes")
+#remotes::install_github("mikemc/speedyseq")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+library(speedyseq)
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Merge replicas for each site by median (non-parametric)
+BacIndAgriGenera.rarefied.merged_replica <- merge_samples2(x = BacIndAgriGenera.rarefied, group = "Site_code", fun_otu = median)
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+# Sanity check of counts per sample (the sum should be same across all samples)
+plot(colSums(otu_table(BacIndAgriGenera.rarefied.merged_replica)), 
+     ylab="Count", xlab="Samples", xaxt="n", 
+     main="Counts per sample after merging")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+# Plot the ASVs count per site after median merging to decide a threshold for normalization
+plot_rarefaction_curve(BacIndAgriGenera.rarefied.merged_replica, "ASVs (Genera)")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Rarefy (normalize) to an even depth of 8000 sequences per sample
+BacIndAgriGenera.rarefied2.merged_replica <- rarefy_even_depth(BacIndAgriGenera.rarefied.merged_replica, 
+                                                 sample.size = 8000, 
+                                                 rngseed = 123, replace = FALSE)
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, fig.keep='all'}
+# Sanity check 
+plot(colSums(otu_table(BacIndAgriGenera.rarefied2.merged_replica)), 
+     ylab="Count", xlab="Samples", xaxt="n", 
+     main="Counts per sample after merging and rarefaction")
+```
+
+```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+# Calculate Shannon
+richness.shannon = estimate_richness(
+  BacIndAgriGenera.rarefied2.merged_replica, measures = c("Shannon"))
+# Add shannon to the phyloseq obj
+sample_data(BacIndAgriGenera.rarefied2.merged_replica)$Shannon <- richness.shannon$Shannon
+```
+
+```{r}
+# Get sample data into dataframe
+BacIndAgriGenera.rarefied2.merged_replica.df <-
+as(sample_data(BacIndAgriGenera.rarefied2.merged_replica), "data.frame")
+```
+
+
+```{r}
+reg_model.alphaDiv <- lm(Shannon~Region/Former_landuse, data=BacIndAgriGenera.rarefied2.merged_replica.df)
+summary(reg_model.alphaDiv)
+```
+
 # Differential Abundance
+On merged sites replicas
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
 library(ANCOMBC)
 ```
@@ -676,7 +850,7 @@ FLU --> pairwise
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
 # Estimate differential abundances
 # 1. FLU (Pairwise) bonferroni correction is often applied to control for the increased risk of Type I errors
-ancom.FLU = ancombc2(data = BacIndAgriGenera.rarefied, tax_level = "Genus",
+ancom.FLU = ancombc2(data = BacIndAgriGenera.rarefied2.merged_replica, tax_level = "Genus",
                      fix_formula = "Former_landuse", 
                      group = "Former_landuse", 
                      p_adj_method = "bonferroni", alpha = 0.05, pairwise = TRUE,
@@ -763,7 +937,7 @@ diff_abund.box_plot <- function(taxon, env_factor, title) {
     filter(Genus == taxon)
   
   plot <- ggplot(taxon_data, aes_string(x = env_factor, y = "Abundance", fill = env_factor)) +
-    geom_boxplot() +
+    geom_violin() +
     geom_jitter(width = 0.2, alpha = 0.5) +
     labs(title = title, x = env_factor, y = "Abundance") +
     theme_minimal() +
@@ -802,7 +976,7 @@ print(negative_plot.FLU)
 ## Region
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
 # 2. Region
-ancom.region = ancombc2(data = BacIndAgriGenera.rarefied, tax_level = "Genus",
+ancom.region = ancombc2(data = BacIndAgriGenera.rarefied2.merged_replica, tax_level = "Genus",
                      fix_formula = "Region", 
                      group = "Region", 
                      p_adj_method = "bonferroni", alpha = 0.05, pairwise = TRUE,
@@ -909,10 +1083,10 @@ print(negative_plot.region)
 ## NMDS
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
 # Compute unweighted UniFrac distance
-unifrac_dist <- UniFrac(BacIndAgriGenera.rarefied, weighted = FALSE)
+unifrac_dist <- UniFrac(BacIndAgriGenera.rarefied2.merged_replica, weighted = FALSE)
 
 # Perform NMDS ordination
-ordination.NMDS <- ordinate(BacIndAgriGenera.rarefied, method = "NMDS", distance = unifrac_dist)
+ordination.NMDS <- ordinate(BacIndAgriGenera.rarefied2.merged_replica, method = "NMDS", distance = unifrac_dist)
 
 ## For 3d plotting
 # NMDS ordination
@@ -925,10 +1099,12 @@ nmds_scores <- scores(ordination.NMDS.3d, display="sites")
 nmds_data <- as.data.frame(nmds_scores)
 ```
 
+
 ###Region
+
 ```{r}
 # 2d plot
-ordination_NMDS.Region <- plot_ordination(BacIndAgriGenera.rarefied, ordination.NMDS, type="samples", color="Region") + 
+ordination_NMDS.Region <- plot_ordination(BacIndAgriGenera.rarefied2.merged_replica, ordination.NMDS, type="samples", color="Region") + 
   ggtitle("samples ordination:", 
           subtitle="NMDS with unweighted UniFrac distances")+ 
   geom_point(size=3) + stat_ellipse() +
@@ -940,7 +1116,7 @@ print(ordination_NMDS.Region)
 ```
 
 ```{r}
-nmds_data$Region <- sample_data(BacIndAgriGenera.rarefied)$Region
+nmds_data$Region <- sample_data(BacIndAgriGenera.rarefied2.merged_replica)$Region
 
 # 3D plot
 ordination_NMDS.Region.3d <- plot_ly(nmds_data, x = ~NMDS1, y = ~NMDS2, z = ~NMDS3, 
@@ -957,9 +1133,11 @@ ordination_NMDS.Region.3d
 
 ```
 
+
 ###FLU
+
 ```{r}
-ordination_NMDS.FLU <- plot_ordination(BacIndAgriGenera.rarefied, ordination.NMDS, type="samples", color="Former_landuse") + 
+ordination_NMDS.FLU <- plot_ordination(BacIndAgriGenera.rarefied2.merged_replica, ordination.NMDS, type="samples", color="Former_landuse") + 
   ggtitle("samples ordination:", 
           subtitle="NMDS with unweighted UniFrac distances")+ 
   geom_point(size=3) + stat_ellipse() +
@@ -971,7 +1149,7 @@ print(ordination_NMDS.FLU)
 ```
 
 ```{r}
-nmds_data$Former_landuse <- sample_data(BacIndAgriGenera.rarefied)$Former_landuse
+nmds_data$Former_landuse <- sample_data(BacIndAgriGenera.rarefied2.merged_replica)$Former_landuse
 
 # 3D plot
 ordination_NMDS.FLU.3d <- plot_ly(nmds_data, x = ~NMDS1, y = ~NMDS2, z = ~NMDS3, 
@@ -990,9 +1168,9 @@ ordination_NMDS.FLU.3d
 
 ## RDA
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
-# Convert BacIndAgriGenera.rarefied to data frame for abundance and environmental data
-abund_data <- as.data.frame(t(otu_table(BacIndAgriGenera.rarefied)))
-env_data <- data.frame(as(sample_data(BacIndAgriGenera.rarefied), "data.frame"))
+# Convert BacIndAgriGenera.rarefied2.merged_replica to data frame for abundance and environmental data
+abund_data <- as.data.frame(t(otu_table(BacIndAgriGenera.rarefied2.merged_replica)))
+env_data <- data.frame(as(sample_data(BacIndAgriGenera.rarefied2.merged_replica), "data.frame"))
 # Select variables 
 env_data <- env_data[, c("Region", "Former_landuse", "Woodland_age", "pH", "Conductivity")]
 
@@ -1067,25 +1245,25 @@ ggord(ordination.cCA, env_data$Former_landuse, ext=0.8, txt=4, grp_title="Former
       vectyp="longdash", obslab=FALSE)  
 ```
 
-# Nested Modelling
+# Beta Diversity (nested design)
 ```{r, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
 # Re transpose abund_data
 otu_table_matrix <- as.matrix(t(abund_data))
 
 # Create a new phyloseq object with the filtered samples (based on env_data, no NaNs)
-BacIndAgriGenera.rarefied_filtered <- phyloseq(
+BacIndAgriGenera.rarefied2.merged.filtered <- phyloseq(
   otu_table(otu_table_matrix, taxa_are_rows = TRUE),
   sample_data(env_data),
-  tax_table(BacIndAgriGenera.rarefied),
-  phy_tree(BacIndAgriGenera.rarefied)
+  tax_table(BacIndAgriGenera.rarefied2.merged_replica),
+  phy_tree(BacIndAgriGenera.rarefied2.merged_replica)
 )
 ```
 
 ```{r}
 # Calculate beta diversity metrics
-weighted_unifrac_dist.filtered <- UniFrac(BacIndAgriGenera.rarefied_filtered, weighted = TRUE)
-unweighted_unifrac_dist.filtered <- UniFrac(BacIndAgriGenera.rarefied_filtered, weighted = FALSE)
-bray_dist.filtered <- distance(BacIndAgriGenera.rarefied_filtered, method="bray")
+weighted_unifrac_dist.filtered <- UniFrac(BacIndAgriGenera.rarefied2.merged.filtered, weighted = TRUE)
+unweighted_unifrac_dist.filtered <- UniFrac(BacIndAgriGenera.rarefied2.merged.filtered, weighted = FALSE)
+bray_dist.filtered <- distance(BacIndAgriGenera.rarefied2.merged.filtered, method="bray")
 ```
 
 ```{r}
@@ -1149,13 +1327,9 @@ pH / conductivity / FLU / woodland age / region
 
 ## Weighted UniFrac
 ```{r}
-nested_model.weighted_unifrac <- adonis2(weighted_unifrac_dist.filtered ~ 
-  pH + Region + Former_landuse + Woodland_age + 
-  Region/Former_landuse + 
-  Former_landuse/pH + Former_landuse/Conductivity + 
-  Former_landuse/Woodland_age + 
-  Region/Woodland_age,
-        data = env_data, permutations=1000)
+nested_model.weighted_unifrac <- adonis2(weighted_unifrac_dist.filtered ~ Region/Former_landuse 
+                                         + pH + Woodland_age,
+        data = env_data, strata = env_data$Region, permutations=1000)
 nested_model.weighted_unifrac
 ```
 
@@ -1169,13 +1343,9 @@ nested_model.pie(nested_model.weighted_unifrac, "Explained Variance of weighted 
 
 ## Unweighted UniFrac
 ```{r}
-nested_model.unweighted_unifrac <- adonis2(unweighted_unifrac_dist.filtered ~ 
-  pH + Region + Former_landuse + Woodland_age + 
-  Region/Former_landuse + 
-  Former_landuse/pH + Former_landuse/Conductivity + 
-  Former_landuse/Woodland_age + 
-  Region/Woodland_age,
-        data = env_data, permutations=1000)
+nested_model.unweighted_unifrac <- adonis2(unweighted_unifrac_dist.filtered ~ Region/Former_landuse 
+                                         + pH + Woodland_age,
+        data = env_data, strata = env_data$Region, permutations=1000)
 nested_model.unweighted_unifrac
 ```
 
@@ -1189,8 +1359,9 @@ nested_model.pie(nested_model.unweighted_unifrac, "Explained Variance of unweigh
 
 ## Bray curtis
 ```{r}
-nested_model.bray <- adonis2(bray_dist.filtered ~ pH + Region*Former_landuse + Former_landuse/pH + Former_landuse/Conductivity + Former_landuse/Woodland_age + Region/Woodland_age,
-        data = env_data, permutations=1000)
+nested_model.bray <- adonis2(bray_dist.filtered ~ Region/Former_landuse 
+                                         + pH + Woodland_age,
+        data = env_data, strata = env_data$Region, permutations=1000)
 nested_model.bray
 ```
 
@@ -1204,8 +1375,9 @@ nested_model.pie(nested_model.bray, "Explained Variance of bray curtis by enviro
 
 ## Abundance data 
 ```{r}
-nested_model.abund <- adonis2(abund_data ~ pH + Region*Former_landuse + Former_landuse/pH + Former_landuse/Conductivity + Former_landuse/Woodland_age + Region/Woodland_age,
-        data = env_data, permutations=1000)
+nested_model.abund <- adonis2(abund_data ~ Region/Former_landuse 
+                                         + pH + Woodland_age,
+        data = env_data, strata = env_data$Region, permutations=1000)
 nested_model.abund
 ```
 
